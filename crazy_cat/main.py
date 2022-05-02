@@ -1,5 +1,6 @@
 import cv2
 import mss
+import os
 import signal
 
 from src import Template, MssScreenReader, ScreenDetector, State, StateHistory, Action, Writer, GameField, Gamer, \
@@ -92,8 +93,11 @@ class CrazyCatGamer(Gamer):
 
 
 def main(max_iterations=2000, video_output=False):
-    templates = [Template(cv2.imread(cfg['src'], cv2.IMREAD_GRAYSCALE), cfg['bbox'], name=cfg['name'])
-                 for cfg in templates_config]
+    path = os.path.dirname(os.path.realpath(__file__))
+    templates = [
+        Template(cv2.imread(os.path.join(path, cfg['src']), cv2.IMREAD_GRAYSCALE), cfg['bbox'], name=cfg['name'])
+        for cfg in templates_config]
+
     screen_detector = ScreenDetector(templates, [1150, 1400, 520, 860], converter=cv2.COLOR_RGB2GRAY)
     gamer = CrazyCatGamer(action_range=[550, 710])
     controller = KeyboardController({
