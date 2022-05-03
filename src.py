@@ -11,15 +11,76 @@ from abc import ABC, abstractmethod
 import time
 
 
-class Template:
-    def __init__(self, img: npt.NDArray, shift: list, name: str = ''):
+class Detectable(ABC):
+    @abstractmethod
+    def detect(self, img):
+        pass
+
+    @abstractmethod
+    def get_name(self):
+        pass
+
+
+class Template(Detectable):
+    def __init__(self, img: npt.NDArray, shift: list, name: str = '', sensitivity=0.995):
         self.img = img
         self.shift = shift
         self.name = name
+        self.sensitivity = sensitivity
+
+    def detect(self, img):
+        locs = cv2.matchTemplate(img, self.img, cv2.TM_CCOEFF_NORMED)
+        locs = np.where(locs >= self.sensitivity)
+
+        res = []
+
+        for pt in zip(*locs[::-1]):
+            detected_bbox = [
+                [pt[0] + self.shift[0], pt[1] + self.shift[1]],
+                [pt[0] + self.shift[2], pt[1] + self.shift[3]]
+            ]
+
+            res.append(detected_bbox)
+
+        return res
+
+    def get_name(self):
+        return self.name
+
+
+class HSVTemplate(Detectable):
+    def __init__(self, lower, upper, shift, name='', noise_kernel=7):
+        self.range = [lower, upper]
+        self.shift = shift
+        self.name = name
+
+        self.noise_kernel = np.ones((noise_kernel, noise_kernel), np.uint8)
+
+    def detect(self, img):
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(img, self.range[0], self.range[1])
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.noise_kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.noise_kernel)
+
+        locs = np.where(mask >= 250)
+
+        res = []
+        for pt in zip(*locs[::-1]):
+            detected_bbox = [
+                [pt[0] + self.shift[0], pt[1] + self.shift[1]],
+                [pt[0] + self.shift[2], pt[1] + self.shift[3]]
+            ]
+
+            res.append(detected_bbox)
+
+        return res
+
+    def get_name(self):
+        return self.name
 
 
 class DetectedObject:
-    def __init__(self, bbox, template: Template):
+    def __init__(self, bbox, template: Detectable):
         self.bbox = bbox
         self.template = template
 
@@ -29,7 +90,7 @@ class DetectedObject:
     def __repr__(self):
         bbox = self.get_bbox()
 
-        return f"{self.template.name}: {bbox[0]}, {bbox[1]}"
+        return f"{self.template.get_name()}: {bbox[0]}, {bbox[1]}"
 
 
 class MssScreenReader:
@@ -57,13 +118,21 @@ class Screen:
         self.objects = objects
         self.img = img
 
+    def get_object(self, name):
+        for obj in self.objects:
+            if obj.template.get_name() == name:
+                return obj
+
+        return None
+
 
 class ScreenDetector:
-    def __init__(self, templates: List[Template], bbox: [] = None, merge_radius=50, converter=None):
+    def __init__(self, templates: List[Detectable], bbox: [] = None, merge_radius=50, converter=None, sensitivity=0.995):
         self.templates = templates
         self.bbox = bbox
         self.merge_radius = merge_radius
         self.converter = converter
+        self.sensitivity = sensitivity
 
     def detect(self, img) -> Screen:
         locs = []
@@ -77,24 +146,21 @@ class ScreenDetector:
 
         return Screen(objects=locs, img=img)
 
-    def detect_template(self, img, template):
+    def detect_template(self, img, template: Detectable):
         if self.bbox is not None:
             img = img[self.bbox[0]:self.bbox[1], self.bbox[2]:self.bbox[3]]
             top_left = (self.bbox[2], self.bbox[0])
         else:
             top_left = (0, 0)
 
-        res = cv2.matchTemplate(img, template.img, cv2.TM_CCOEFF_NORMED)
-        sensitivity = 0.995  # @TODO who responsible for sensitivity?
-
-        locs = np.where(res >= sensitivity)
+        locs = template.detect(img)
 
         res = []
 
-        for pt in zip(*locs[::-1]):
+        for pt in locs:
             detected_bbox = [
-                [pt[0] + template.shift[0] + top_left[0], pt[1] + template.shift[1] + top_left[1]],
-                [pt[0] + template.shift[2] + top_left[0], pt[1] + template.shift[3] + top_left[1]]
+                [pt[0][0] + top_left[0], pt[0][1] + top_left[1]],
+                [pt[1][0] + top_left[0], pt[1][1] + top_left[1]]
             ]
 
             candidate_object = DetectedObject(bbox=detected_bbox, template=template)
@@ -139,7 +205,7 @@ class State:
         self.current_actions.remove(action_name)
 
     def process(self, action):
-        action_name, what_to_do = action
+        action_name, what_to_do, *_ = action
 
         if what_to_do in {Action.START, Action.CONTINUE}:
             self.set_action(action_name)
@@ -179,7 +245,7 @@ def apply_template_boundaries(img, detected_objects):
     for detected_object in detected_objects:
         bbox = detected_object.get_bbox()
         img = cv2.rectangle(img, bbox[0], bbox[1], clr, 4)
-        img = cv2.putText(img, f'{detected_object.template.name}: {bbox[0][0]}',
+        img = cv2.putText(img, f'{detected_object.template.name}: {bbox}',
                           (bbox[0][0], bbox[0][1] - 20),
                           cv2.FONT_HERSHEY_PLAIN, 3, clr, 2)
     return img
@@ -212,15 +278,17 @@ class Writer:
 
         img = apply_template_boundaries(img, state.screen.objects)
 
-        img = cv2.rectangle(
-            img,
-            [self.detector.bbox[2], self.detector.bbox[0]], [self.detector.bbox[3], self.detector.bbox[1]],
-            detector_area_color, 4)
+        if self.detector.bbox:
+            img = cv2.rectangle(
+                img,
+                [self.detector.bbox[2], self.detector.bbox[0]], [self.detector.bbox[3], self.detector.bbox[1]],
+                detector_area_color, 4)
 
-        img = cv2.line(img, [self.gamer.action_range[0], 0], [self.gamer.action_range[0], 1480], action_range_color)
-        img = cv2.line(img, [self.gamer.action_range[1], 0], [self.gamer.action_range[1], 1480], action_range_color)
+        if self.gamer.action_range:
+            img = cv2.line(img, [self.gamer.action_range[0], 0], [self.gamer.action_range[0], 1480], action_range_color)
+            img = cv2.line(img, [self.gamer.action_range[1], 0], [self.gamer.action_range[1], 1480], action_range_color)
 
-        actions_string = ' | '.join([a[0] + '' + str(a[1]) for a in actions])
+        actions_string = ' | '.join([':'.join(map(str, a)) for a in actions])
         img = cv2.putText(img, actions_string, (90, 90), cv2.FONT_HERSHEY_PLAIN, 4, action_string_color, 3)
 
         self.writer.write(img)
@@ -240,7 +308,7 @@ class KeyboardController(Controller):
         self.action_map = {} if action_map is None else action_map
 
     def process(self, action):
-        action_name, what_to_do = action
+        action_name, what_to_do, *_ = action
         key = self.action_map.get(action_name, {}).get(what_to_do)
 
         if key is not None:
