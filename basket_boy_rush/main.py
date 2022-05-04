@@ -8,6 +8,7 @@ import os
 import signal
 import time
 import uuid
+import math
 
 from src import Template, MssScreenReader, ScreenDetector, State, StateHistory, Action, Writer, GameField, Gamer, \
     Game, Controller, HSVTemplate
@@ -23,7 +24,7 @@ class MouseController(Controller):
 
         self.id_ = uuid.uuid4()
 
-        self.throw_history = {'ball': [], 'click': None}
+        self.throw_history = {'ball': []}
 
     def process(self, action):
         top_left = (350, 100)  # x, y
@@ -41,7 +42,7 @@ class MouseController(Controller):
 
                 self.throw_history['ball'].append(abs_basll_loc)
 
-            if (self.last_click_time is not None) and ((current_time - self.last_click_time) < 1.9):
+            if (self.last_click_time is not None) and ((current_time - self.last_click_time) < 2.7):
                 return
 
             basket_loc = props['basket']
@@ -51,20 +52,42 @@ class MouseController(Controller):
                 top_left[1] + int(basket_loc[1] / 2),
             )
 
-            # abs_player_loc = (450, 750)
-            # print('basket', abs_basket_loc)
-            # print('player', abs_player_loc)
+            basket_x = abs_basket_loc[0]
+            basket_y = abs_basket_loc[1]
 
-            drag_to_loc = abs_basket_loc
+            xo = 464.25297363189236
+            yo = 713.38807506372
 
-            self.throw_history['click'] = drag_to_loc
+            if basket_x > 750:
+                a = 0.004
 
-            with open(f'basket_boy_rush/throw_data/throw_data_{self.id_}.json', 'w') as outfile:
-                json.dump(self.throw_history, outfile)
+            if basket_x > 700:
+                a = 0.012
 
-            pyautogui.click(drag_to_loc[0], drag_to_loc[1], 0.5, button='left')
+            elif basket_x >= 650:
+                a = 0.025
 
-            print((drag_to_loc[0], drag_to_loc[1]))
+            elif basket_x >= 600:
+                a = 0.04
+
+            else:
+                a = 0.05
+
+            b = (-xo - basket_x) * a + (yo - basket_y) / (xo - basket_x)
+            c = xo * basket_x * a + yo - xo * (yo - basket_y) / (xo - basket_x)
+
+            click_x = -(0.49762931 * b / a) + 19.330978817352957
+            click_y = (-0.24998402154960112 * (b * b) / a) + c + 180.89041488168095
+
+            self.throw_history['click'] = (click_x, click_y)
+
+            # with open(f'basket_boy_rush/throw_data/throw_data_{self.id_}.json', 'w') as outfile:
+            #     json.dump(self.throw_history, outfile)
+
+            pyautogui.click(click_x, click_y, 0.5, button='left')
+
+            print('click', self.throw_history['click'])
+            print('basket', abs_basket_loc)
 
             self.last_click_time = current_time
 
